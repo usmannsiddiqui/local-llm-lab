@@ -11,12 +11,20 @@ const MODEL = "openai/gpt-oss-20b";
 
 const question = process.argv.slice(2).join(" ") || "Say hello in five words.";
 
-const response = await client.chat.completions.create({
+// stream: true switches the response from one JSON blob to Server-Sent Events —
+// the server flushes each token as the model produces it, and the SDK hands
+// them to us as an async iterable of "chunks".
+const stream = await client.chat.completions.create({
   model: MODEL,
   messages: [
     { role: "system", content: "You are a helpful coding assistant. Reasoning: low" },
     { role: "user", content: question },
   ],
+  stream: true,
 });
 
-console.log(response.choices[0].message.content);
+for await (const chunk of stream) {
+  // Each chunk carries a "delta" — just the new tokens since the last chunk.
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}
+process.stdout.write("\n");
