@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import readline from "node:readline/promises";
+import { readFile } from "node:fs/promises";
 
 // The whole trick: same SDK everyone uses for OpenAI, pointed at your laptop.
 // LM Studio requires no API key, but the SDK insists the field exists.
@@ -17,18 +18,58 @@ const messages: OpenAI.ChatCompletionMessageParam[] = [
 ];
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-console.log("mini-assistant — chat with your local model. Ctrl+C or 'exit' to quit.\n");
+console.log("mini-assistant — chat with your local model.");
+console.log("Commands: /file <path> to add a file to the conversation, 'exit' to quit.\n");
 
-while (true) {
-  // question() rejects if stdin closes (Ctrl+D or end of piped input) —
-  // treat that the same as typing "exit".
-  let input: string;
+// "File context" is no magic: the file's text just becomes another message in
+// the array. That's the core of every AI coding tool — the model never touches
+// your disk; the tool decides what text to paste into the conversation.
+async function addFileContext(path: string): Promise<void> {
+  let content: string;
   try {
-    input = (await rl.question("you> ")).trim();
-  } catch {
-    break;
+    content = await readFile(path, "utf8");
+  } catch (err) {
+    console.log(`could not read ${path}: ${(err as Error).message}\n`);
+    return;
   }
-  if (!input || input === "exit") break;
+  messages.push({
+    role: "user",
+    content: `Here is the file \`${path}\` for reference:\n\n\`\`\`\n${content}\n\`\`\``,
+  });
+  // Rough rule of thumb: ~4 characters per token. Worth knowing because the
+  // file spends context-window budget on EVERY turn from now on.
+  console.log(`added ${path} (~${Math.round(content.length / 4)} tokens of context)\n`);
+}
+
+// With piped input, buffered lines keep processing after stdin has closed —
+// prompting a closed interface throws, so only prompt while it's open.
+let stdinOpen = true;
+rl.on("close", () => {
+  stdinOpen = false;
+});
+const prompt = () => {
+  if (stdinOpen) rl.prompt();
+};
+
+rl.setPrompt("you> ");
+prompt();
+
+// Iterating readline (instead of calling rl.question in a loop) buffers lines
+// that arrive while we're busy awaiting the model, rather than dropping them.
+// The loop ends naturally on Ctrl+D or end of piped input.
+for await (const line of rl) {
+  const input = line.trim();
+  if (input === "exit") break;
+  if (!input) {
+    prompt();
+    continue;
+  }
+
+  if (input.startsWith("/file ")) {
+    await addFileContext(input.slice("/file ".length).trim());
+    prompt();
+    continue;
+  }
 
   messages.push({ role: "user", content: input });
 
@@ -49,6 +90,7 @@ while (true) {
 
   // Without this line the model would forget its own answer next turn.
   messages.push({ role: "assistant", content: reply });
+  prompt();
 }
 
 rl.close();
